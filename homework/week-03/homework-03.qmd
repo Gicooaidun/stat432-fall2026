@@ -1,0 +1,570 @@
+---
+title: "Homework 03"
+author: "Chunyang Gao"
+format:
+  html:
+    embed-resources: true
+    toc: false
+execute:
+  echo: true
+  warning: false
+  message: false
+jupyter: python3
+---
+
+## Question 1: Build an `explain-to-me` skill
+
+I created and installed a short skill named `explain-to-me`, and I tested it by explicitly asking the agent to use the skill to explain Question 2. The skill was designed to explain the goal, required work, notation, relevant Week 3 material, and a reasonable first step, while avoiding calculations, solution code, or final answers.
+
+The complete contents of my skill are appended at the end of this submission under the heading **`explain-to-me` skill**.
+
+## Question 2: Ridge regression with nearly collinear predictors
+
+```{python}
+import numpy as np
+import pandas as pd
+
+rng = np.random.default_rng(43231)
+n, p, reps = 100, 4, 200
+
+# Generate the design once.
+L = rng.normal(size=n)
+U1 = rng.normal(size=n)
+U2 = rng.normal(size=n)
+X = np.column_stack([
+    L + 0.04 * U1,
+    L + 0.04 * U2,
+    rng.normal(size=n),
+    rng.normal(size=n),
+])
+
+# Center and scale so each column has mean 0 and average squared value 1.
+X = X - X.mean(axis=0)
+X = X / np.sqrt(np.mean(X**2, axis=0))
+
+beta_true = np.array([1.5, 1.5, 1.0, 0.0])
+mu = X @ beta_true
+lambdas = np.array([0.0, 0.02, 0.2])
+
+singular_values = np.linalg.svd(X, compute_uv=False)
+design_summary = pd.Series({
+    "correlation": np.corrcoef(X[:, 0], X[:, 1])[0, 1],
+    "largest singular value": singular_values.max(),
+    "smallest singular value": singular_values.min(),
+})
+print(design_summary.round(4))
+```
+
+The first two predictors have correlation about \(0.9983\). The largest singular value is about \(14.1730\), while the smallest is only about \(0.4061\). Thus the design has one direction with very little information. Since \(X_1\) and \(X_2\) are almost the same, their **sum** is well determined, while their **difference** is weakly identified. Therefore \(\widehat\beta_1-\widehat\beta_2\) should vary much more than \(\widehat\beta_1+\widehat\beta_2\).
+
+```{python}
+beta_hat = np.empty((reps, p, len(lambdas)))
+train_mse = np.empty((reps, len(lambdas)))
+test_mse = np.empty((reps, len(lambdas)))
+
+for r in range(reps):
+    y = mu + rng.normal(size=n)
+    y_test = mu + rng.normal(size=n)
+    y_centered = y - y.mean()
+
+    for j, lam in enumerate(lambdas):
+        bhat = np.linalg.solve(
+            X.T @ X + n * lam * np.eye(p),
+            X.T @ y_centered
+        )
+        beta_hat[r, :, j] = bhat
+        y_hat = y.mean() + X @ bhat
+        train_mse[r, j] = np.mean((y - y_hat) ** 2)
+        test_mse[r, j] = np.mean((y_test - y_hat) ** 2)
+
+rows = []
+for j, lam in enumerate(lambdas):
+    b1 = beta_hat[:, 0, j]
+    b2 = beta_hat[:, 1, j]
+    rows.append({
+        "lambda": lam,
+        "beta1 mean": b1.mean(),
+        "beta1 sd": b1.std(ddof=1),
+        "beta2 mean": b2.mean(),
+        "beta2 sd": b2.std(ddof=1),
+        "sum mean": (b1+b2).mean(),
+        "sum sd": (b1+b2).std(ddof=1),
+        "difference mean": (b1-b2).mean(),
+        "difference sd": (b1-b2).std(ddof=1),
+        "train MSE": train_mse[:, j].mean(),
+        "test MSE": test_mse[:, j].mean(),
+    })
+
+q2_table = pd.DataFrame(rows)
+print(q2_table.round(3).to_string(index=False))
+```
+
+The empirical results are approximately:
+
+| \(\lambda\) | \(\hat\beta_1\) mean (sd) | \(\hat\beta_2\) mean (sd) | sum mean (sd) | difference mean (sd) | train MSE | test MSE |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 1.290 (1.795) | 1.701 (1.798) | 2.992 (0.105) | -0.411 (3.592) | 0.949 | 1.038 |
+| 0.02 | 1.465 (0.145) | 1.497 (0.148) | 2.961 (0.104) | -0.032 (0.274) | 0.960 | 1.029 |
+| 0.2 | 1.355 (0.049) | 1.359 (0.050) | 2.715 (0.095) | -0.004 (0.029) | 1.064 | 1.125 |
+
+OLS is nearly unbiased on average, but the individual coefficients are extremely variable because the data cannot easily distinguish \(X_1\) from \(X_2\). The sum is much more stable because the common direction is well observed. Ridge introduces some bias but greatly reduces variance. With \(\lambda=0.02\), this variance reduction slightly improves average test MSE. With \(\lambda=0.2\), shrinkage is much stronger: variance falls further, but the coefficient sum is pulled noticeably below its true value \(3\), so the extra bias increases test MSE.
+
+Ridge can strongly stabilize the separate coefficients without changing fitted values nearly as much because, when \(X_1\approx X_2\), prediction depends mostly on the combination \(\beta_1+\beta_2\). Large opposite changes in \(\beta_1\) and \(\beta_2\) can therefore leave \(X_1\beta_1+X_2\beta_2\) almost unchanged.
+
+## Question 3: What does ridge regression shrink?
+
+The objective is
+
+\[
+L_\lambda(\boldsymbol\beta)
+=
+\frac{1}{2n}
+\|\widetilde{\mathbf y}-\mathbf X\boldsymbol\beta\|_2^2
++
+\frac{\lambda}{2}\|\boldsymbol\beta\|_2^2.
+\]
+
+Its gradient is
+
+\[
+\nabla L_\lambda(\boldsymbol\beta)
+=
+-\frac{1}{n}\mathbf X^{\mathsf T}
+(\widetilde{\mathbf y}-\mathbf X\boldsymbol\beta)
++\lambda\boldsymbol\beta.
+\]
+
+Setting the gradient to zero gives
+
+\[
+\frac{1}{n}\mathbf X^{\mathsf T}\mathbf X\widehat{\boldsymbol\beta}_\lambda
++\lambda\widehat{\boldsymbol\beta}_\lambda
+=
+\frac{1}{n}\mathbf X^{\mathsf T}\widetilde{\mathbf y},
+\]
+
+so
+
+\[
+(\mathbf X^{\mathsf T}\mathbf X+n\lambda\mathbf I_p)
+\widehat{\boldsymbol\beta}_\lambda
+=
+\mathbf X^{\mathsf T}\widetilde{\mathbf y}.
+\]
+
+For any nonzero vector \(\mathbf a\),
+
+\[
+\mathbf a^{\mathsf T}
+(\mathbf X^{\mathsf T}\mathbf X+n\lambda\mathbf I_p)\mathbf a
+=
+\|\mathbf X\mathbf a\|_2^2
++n\lambda\|\mathbf a\|_2^2>0
+\]
+
+whenever \(\lambda>0\). Therefore the matrix is positive definite and invertible, so the ridge solution is unique even if \(\mathbf X\) is rank deficient or \(p>n\).
+
+Using the compact SVD
+
+\[
+\mathbf X=\mathbf U_r\mathbf D_r\mathbf V_r^{\mathsf T},
+\]
+
+the ridge coefficient estimate can be written as
+
+\[
+\widehat{\boldsymbol\beta}_\lambda
+=
+\mathbf V_r
+(\mathbf D_r^2+n\lambda\mathbf I_r)^{-1}
+\mathbf D_r
+\mathbf U_r^{\mathsf T}\widetilde{\mathbf y}.
+\]
+
+Multiplying by \(\mathbf X\),
+
+\[
+\mathbf X\widehat{\boldsymbol\beta}_\lambda
+=
+\sum_{j=1}^r
+\frac{d_j^2}{d_j^2+n\lambda}
+\mathbf u_j\mathbf u_j^{\mathsf T}\widetilde{\mathbf y}.
+\]
+
+Thus the fitted response component in singular direction \(j\) is multiplied by
+
+\[
+\rho_j(\lambda)=\frac{d_j^2}{d_j^2+n\lambda}.
+\]
+
+Here \(n\lambda=100(0.01)=1\), so
+
+\[
+\rho_1=\frac{100}{101}\approx0.9901,
+\qquad
+\rho_2=\frac{4}{5}=0.8,
+\qquad
+\rho_3=\frac{0.04}{1.04}\approx0.0385.
+\]
+
+Including the unpenalized intercept,
+
+\[
+\operatorname{df}_{\mathrm{eff}}
+=
+1+0.9901+0.8+0.0385
+\approx2.8286.
+\]
+
+The third direction is shrunk the most because its singular value \(d_3=0.2\) is very small. A small singular value means that this direction is weakly supported by the design, so an OLS estimate can react strongly to noise. Shrinking it therefore reduces prediction variance. However, if the true mean has an important component in this weak direction, heavy shrinkage will remove real signal and create substantial prediction bias.
+
+## Question 4: Ridge regression and optimization
+
+The unpenalized eigenvalues are \(9\) and \(0.01\), so
+
+\[
+\kappa(\mathbf A_0)=\frac{9}{0.01}=900.
+\]
+
+With \(\lambda=0.09\), the ridge eigenvalues become
+
+\[
+9.09
+\quad\text{and}\quad
+0.10,
+\]
+
+so
+
+\[
+\kappa(\mathbf A_\lambda)=\frac{9.09}{0.10}=90.9.
+\]
+
+Thus ridge makes the quadratic objective much less elongated. The curvature still differs by direction, but the disparity is much smaller, so the optimization problem is better conditioned.
+
+For a quadratic ridge objective,
+
+\[
+\nabla L_\lambda(\boldsymbol\beta^{(k)})
+=
+\mathbf A_\lambda
+(\boldsymbol\beta^{(k)}-\widehat{\boldsymbol\beta}_\lambda)
+=
+\mathbf A_\lambda\mathbf e^{(k)}.
+\]
+
+Therefore
+
+\[
+\mathbf e^{(k+1)}
+=
+\mathbf e^{(k)}-\eta\mathbf A_\lambda\mathbf e^{(k)}
+=
+(\mathbf I-\eta\mathbf A_\lambda)\mathbf e^{(k)}.
+\]
+
+If an eigendirection has unpenalized eigenvalue \(a\), then its ridge eigenvalue is \(a+\lambda\). Hence its error component is multiplied by
+
+\[
+1-\eta(a+\lambda)
+\]
+
+at every iteration.
+
+For contraction in every direction we need
+
+\[
+|1-\eta(a+\lambda)|<1
+\]
+
+for all ridge eigenvalues. The largest ridge eigenvalue is \(M=9.09\), so
+
+\[
+0<\eta<\frac{2}{M}
+=
+\frac{2}{9.09}
+\approx0.2200.
+\]
+
+For \(\eta=1/M\):
+
+\[
+1-\frac{9.09}{9.09}=0
+\]
+
+in the high-curvature direction, while
+
+\[
+1-\frac{0.10}{9.09}\approx0.9890
+\]
+
+in the low-curvature direction. The high-curvature component disappears in one step, while the weak direction converges very slowly.
+
+For \(\eta=2.1/M\), the high-curvature factor is
+
+\[
+1-\frac{2.1(9.09)}{9.09}=-1.1.
+\]
+
+Because its magnitude is greater than one, that component alternates sign and grows, so gradient descent does not converge when the initial error has a nonzero component in that direction.
+
+Although increasing \(\lambda\) can improve conditioning and make optimization easier, \(\lambda\) defines the statistical estimator. A larger penalty reduces variance but increases shrinkage bias. Therefore \(\lambda\) should be selected for predictive performance using methods such as cross-validation or GCV, not merely to make gradient descent converge faster.
+
+## Question 5: Selecting the ridge penalty for real-estate prediction
+
+```{python}
+from pathlib import Path
+import matplotlib.pyplot as plt
+
+data_dir = Path("data")
+realestate = pd.read_csv(data_dir / "realestate.csv")
+split_folds = pd.read_csv(data_dir / "realestate-split-folds.csv")
+
+df = split_folds.merge(
+    realestate,
+    on="row_id",
+    how="left",
+    validate="one_to_one"
+)
+
+features = ["date", "age", "distance", "stores", "latitude", "longitude"]
+
+X_all = df[features].to_numpy(float)
+y_all = df["price"].to_numpy(float)
+is_train = df["split"].eq("train").to_numpy()
+
+X_train_raw = X_all[is_train]
+X_test_raw = X_all[~is_train]
+y_train = y_all[is_train]
+y_test = y_all[~is_train]
+folds = df.loc[is_train, "cv_fold"].to_numpy(int)
+
+lambda_grid = np.r_[0.0, 10 ** np.linspace(-4, 2, 121)]
+```
+
+### 5.1 Ten-fold cross-validation
+
+Within each fold, I estimate means and scales using only the other nine folds. This avoids data leakage from the validation fold.
+
+```{python}
+fold_ids = np.sort(np.unique(folds))
+fold_mse = np.empty((len(fold_ids), len(lambda_grid)))
+
+for i, fold_id in enumerate(fold_ids):
+    val = folds == fold_id
+
+    X_tr_raw = X_train_raw[~val]
+    X_val_raw = X_train_raw[val]
+    y_tr = y_train[~val]
+    y_val = y_train[val]
+
+    x_mean = X_tr_raw.mean(axis=0)
+    X_tr_centered = X_tr_raw - x_mean
+    x_scale = np.sqrt(np.mean(X_tr_centered**2, axis=0))
+
+    X_tr = X_tr_centered / x_scale
+    X_val = (X_val_raw - x_mean) / x_scale
+
+    y_mean = y_tr.mean()
+    y_tr_centered = y_tr - y_mean
+
+    n_tr, p = X_tr.shape
+    gram = X_tr.T @ X_tr
+    rhs = X_tr.T @ y_tr_centered
+
+    for j, lam in enumerate(lambda_grid):
+        bhat = np.linalg.solve(
+            gram + n_tr * lam * np.eye(p),
+            rhs
+        )
+        pred = y_mean + X_val @ bhat
+        fold_mse[i, j] = np.mean((y_val - pred) ** 2)
+
+cv_mean = fold_mse.mean(axis=0)
+cv_se = fold_mse.std(axis=0, ddof=1) / np.sqrt(len(fold_ids))
+
+min_idx = np.argmin(cv_mean)
+lambda_min = lambda_grid[min_idx]
+one_se_limit = cv_mean[min_idx] + cv_se[min_idx]
+lambda_1se = lambda_grid[cv_mean <= one_se_limit].max()
+
+print("lambda_min =", round(lambda_min, 6))
+print("lambda_1se =", round(lambda_1se, 6))
+```
+
+The selected values are approximately
+
+\[
+\lambda_{\min}=0.01995,
+\qquad
+\lambda_{\mathrm{1se}}=1.58489.
+\]
+
+### 5.2 GCV
+
+For GCV, I standardize once using all 332 training observations and keep that transformation fixed across the penalty grid.
+
+```{python}
+x_mean_full = X_train_raw.mean(axis=0)
+X_full_centered = X_train_raw - x_mean_full
+x_scale_full = np.sqrt(np.mean(X_full_centered**2, axis=0))
+X_full = X_full_centered / x_scale_full
+
+y_mean_full = y_train.mean()
+y_full_centered = y_train - y_mean_full
+
+n_full, p = X_full.shape
+gram_full = X_full.T @ X_full
+rhs_full = X_full.T @ y_full_centered
+sv = np.linalg.svd(X_full, compute_uv=False)
+
+gcv = np.empty(len(lambda_grid))
+df_eff_path = np.empty(len(lambda_grid))
+
+for j, lam in enumerate(lambda_grid):
+    bhat = np.linalg.solve(
+        gram_full + n_full * lam * np.eye(p),
+        rhs_full
+    )
+    pred = y_mean_full + X_full @ bhat
+    train_err = np.mean((y_train - pred) ** 2)
+
+    df_eff = 1 + np.sum(
+        sv**2 / (sv**2 + n_full * lam)
+    )
+    df_eff_path[j] = df_eff
+    gcv[j] = train_err / (1 - df_eff / n_full) ** 2
+
+lambda_gcv = lambda_grid[np.argmin(gcv)]
+print("lambda_gcv =", round(lambda_gcv, 6))
+```
+
+This gives
+
+\[
+\lambda_{\mathrm{GCV}}=0.02818.
+\]
+
+```{python}
+positive = lambda_grid > 0
+x_plot = np.empty(len(lambda_grid))
+x_plot[positive] = np.log10(lambda_grid[positive])
+x_plot[~positive] = -4.5
+
+fig, ax = plt.subplots()
+ax.plot(x_plot, cv_mean)
+ax.fill_between(x_plot, cv_mean - cv_se, cv_mean + cv_se, alpha=0.2)
+ax.axvline(np.log10(lambda_min), linestyle="--", label="CV minimum")
+ax.axvline(np.log10(lambda_1se), linestyle=":", label="One SE")
+ax.set_xlabel(r"OLS point or $\log_{10}(\lambda)$")
+ax.set_ylabel("Mean validation MSE")
+ax.legend()
+plt.show()
+
+fig, ax = plt.subplots()
+ax.plot(x_plot, gcv)
+ax.axvline(np.log10(lambda_gcv), linestyle="--", label="GCV minimum")
+ax.set_xlabel(r"OLS point or $\log_{10}(\lambda)$")
+ax.set_ylabel("GCV")
+ax.legend()
+plt.show()
+```
+
+### 5.3 Final training/test comparison
+
+The three tuning choices are fixed before using the test responses.
+
+```{python}
+def fit_full_ridge(X_raw, y, lam, X_new_raw):
+    x_mean = X_raw.mean(axis=0)
+    X_centered = X_raw - x_mean
+    x_scale = np.sqrt(np.mean(X_centered**2, axis=0))
+    X_std = X_centered / x_scale
+
+    y_mean = y.mean()
+    y_centered = y - y_mean
+    n_fit, p_fit = X_std.shape
+
+    bhat_std = np.linalg.solve(
+        X_std.T @ X_std + n_fit * lam * np.eye(p_fit),
+        X_std.T @ y_centered
+    )
+
+    # Convert to coefficients for raw predictor scale.
+    bhat_raw = bhat_std / x_scale
+    intercept = y_mean - x_mean @ bhat_raw
+
+    train_pred = intercept + X_raw @ bhat_raw
+    test_pred = intercept + X_new_raw @ bhat_raw
+
+    sv_fit = np.linalg.svd(X_std, compute_uv=False)
+    df_eff = 1 + np.sum(
+        sv_fit**2 / (sv_fit**2 + n_fit * lam)
+    )
+
+    return train_pred, test_pred, df_eff
+
+selected = [
+    ("OLS", 0.0),
+    ("CV minimum", lambda_min),
+    ("One SE", lambda_1se),
+    ("GCV", lambda_gcv),
+]
+
+final_rows = []
+for name, lam in selected:
+    train_pred, test_pred, df_eff = fit_full_ridge(
+        X_train_raw, y_train, lam, X_test_raw
+    )
+    final_rows.append({
+        "rule": name,
+        "lambda": lam,
+        "df_eff": df_eff,
+        "train_mse": np.mean((y_train - train_pred)**2),
+        "test_mse": np.mean((y_test - test_pred)**2),
+    })
+
+final_table = pd.DataFrame(final_rows)
+print(final_table.round(5).to_string(index=False))
+```
+
+The final comparison is approximately:
+
+| Rule | \(\lambda\) | Effective df | Training MSE | Test MSE |
+|---|---:|---:|---:|---:|
+| OLS | 0 | 7.000 | 80.094 | 66.322 |
+| CV minimum | 0.01995 | 6.773 | 80.135 | 66.000 |
+| One SE | 1.58489 | 3.033 | 100.374 | 81.200 |
+| GCV | 0.02818 | 6.689 | 80.171 | 65.903 |
+
+OLS has the smallest training MSE, which is expected because it minimizes the unpenalized training squared error. The CV-minimum and GCV penalties are both small, keep nearly all seven effective degrees of freedom, and have similar test performance. The one-standard-error rule chooses much stronger regularization, reducing effective degrees of freedom to about \(3.03\), but it happens to have a larger test MSE on this test set.
+
+The test table must not be used to choose among the procedures after the fact. The purpose of the test set is to provide one final, independent assessment of choices already made from training data. If I selected the smallest test MSE after inspecting the table, the test set would become another validation set and its reported minimum would be optimistically biased.
+
+## `explain-to-me` skill
+
+```text
+---
+name: explain-to-me
+description: Explain a homework question to the student without solving it.
+---
+
+# Explain to Me
+
+When I explicitly ask you to use this skill on a homework question:
+
+1. Explain in simple language what the question is asking me to do.
+2. Break the question into smaller tasks.
+3. Explain any important notation, terminology, or formulas that appear in the question.
+4. Identify the relevant statistical or mathematical concepts I should review.
+5. Suggest a reasonable order for approaching the problem.
+6. Point out common misunderstandings or mistakes I should avoid.
+
+Do not solve the homework problem for me.
+
+Do not provide the final numerical answer, derivation, proof, code solution, or completed response.
+
+You may use small illustrative examples that are different from the homework problem if they help explain a concept.
+
+Stop after explaining what I need to do and what knowledge I need.
+```
